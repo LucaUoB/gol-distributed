@@ -33,7 +33,7 @@ type Distributor struct {
 
 var (
 	dist = Distributor{
-		address: "172.0.0.1:8030",
+		address: "127.0.0.1:8030",
 	}
 )
 
@@ -189,7 +189,7 @@ func outputPGM(world [][]byte, c distributorChannels, p Params, turn int) {
 
 // distributorClient divides the work between workers and interacts with other goroutines.
 func distributor(p Params, c distributorChannels) {
-	brokerAddr := "127.0.0.1:8040"
+	brokerAddr := "172.31.2.61:8040"
 
 	// Subscribing to the broker instance
 	broker, err := rpc.Dial("tcp", brokerAddr)

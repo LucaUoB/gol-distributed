@@ -230,6 +230,7 @@ func (b *Broker) RegisterDistributor(req stubs.DistributorSubscription, res *stu
 	b.stripsReceived = 0
 	b.workersRequired = req.Threads
 	b.workersReady()
+	fmt.Println("Registered Distributor")
 	return err
 }
 
