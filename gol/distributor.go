@@ -2,7 +2,6 @@ package gol
 
 import (
 	"fmt"
-	"net"
 	"net/rpc"
 	"time"
 	"uk.ac.bris.cs/gameoflife/stubs"
@@ -29,13 +28,13 @@ type Distributor struct {
 	address           string
 	cellCount         int
 	killed            bool
+	quitting          bool
 }
 
 var (
 	dist = Distributor{
-		address: "172.31.5.250:8030",
+		address: "172.0.0.1:8030",
 	}
-	registered = false
 )
 
 func makeWorld(height, width int) [][]byte {
@@ -66,10 +65,12 @@ func (d *Distributor) runIO(turn int, ticker *time.Ticker) bool {
 			outputPGM(d.outputWorld(), d.c, d.p, turn)
 		case 'q':
 			d.broadcastCommand(stubs.ReturnStrip)
+			d.quitting = true
 			return true
 		case 'k':
 			d.broadcastCommand(stubs.Kill)
 			d.killed = true
+			d.quitting = true
 			return true
 		case 'p':
 			paused(d.c.keyPresses)
@@ -143,34 +144,27 @@ func (d *Distributor) publishStrips() {
 		StartY: (d.p.Threads - 1) * step,
 	}
 	d.broker.Call(stubs.PublishStrip, stubs.PublishStripRequest{Strip: strip}, nil)
-	d.receiveCommandCompletion()
 }
 func (d *Distributor) broadcastCommand(command stubs.WorkerCommand) {
-	status := new(stubs.StatusReport)
-	d.broker.Call(stubs.PublishCommand, stubs.Command{WorkerCommand: command}, status)
-	d.receiveCommandCompletion()
-}
-func (d *Distributor) receiveCommandCompletion() {
-	for i := 0; i < d.p.Threads; i++ {
-		<-d.commandCompletion
+	reports := new(stubs.WorkerReportArr)
+	d.broker.Call(stubs.PublishCommand, stubs.Command{WorkerCommand: command}, &reports)
+	for _, report := range reports.Arr {
+		switch report.Command {
+		case stubs.CountCells:
+			d.cellCount += report.AliveCount
+		case stubs.ReceiveStrip:
+		case stubs.ExecuteTurn:
+		case stubs.ReturnStrip:
+			d.collectStrips(report.WorkerReturn.Order, report.WorkerReturn.Strip)
+		case stubs.Finish:
+			d.collectStrips(report.WorkerReturn.Order, report.WorkerReturn.Strip)
+		case stubs.Kill:
+			d.collectStrips(report.WorkerReturn.Order, report.WorkerReturn.Strip)
+		}
 	}
 }
 func (d *Distributor) collectStrips(order int, strip [][]byte) {
 	d.finalStrips[order] = strip
-}
-func (d *Distributor) CommandExecuted(req stubs.WorkerReport, res *stubs.StatusReport) (err error) {
-	switch req.Command {
-	case stubs.CountCells:
-		d.cellCount += req.AliveCount
-	case stubs.ReceiveStrip:
-	case stubs.ExecuteTurn:
-	case stubs.ReturnStrip:
-		d.collectStrips(req.WorkerReturn.Order, req.WorkerReturn.Strip)
-	case stubs.Finish:
-		d.collectStrips(req.WorkerReturn.Order, req.WorkerReturn.Strip)
-	}
-	d.commandCompletion <- 1
-	return
 }
 func getAllAlive(world [][]byte, startY int) []util.Cell {
 	var aliveCells []util.Cell
@@ -195,15 +189,7 @@ func outputPGM(world [][]byte, c distributorChannels, p Params, turn int) {
 
 // distributorClient divides the work between workers and interacts with other goroutines.
 func distributor(p Params, c distributorChannels) {
-	brokerAddr := "172.31.2.61:8040"
-
-	// Distributor RPC server
-	if !registered {
-		listener, _ := net.Listen("tcp", dist.address)
-		go func() {
-			rpc.Accept(listener)
-		}()
-	}
+	brokerAddr := "127.0.0.1:8040"
 
 	// Subscribing to the broker instance
 	broker, err := rpc.Dial("tcp", brokerAddr)
@@ -227,10 +213,6 @@ func distributor(p Params, c distributorChannels) {
 		fmt.Println(err)
 		return
 	}
-	if !registered {
-		err = rpc.Register(&dist)
-		registered = true
-	}
 	completedWorld, turn := dist.runImage(status.TurnsProcessed)
 	outputPGM(completedWorld, c, p, turn)
 	if !dist.killed {
@@ -238,6 +220,9 @@ func distributor(p Params, c distributorChannels) {
 		if err != nil {
 			fmt.Println(err)
 		}
+	}
+	if dist.quitting {
+		time.Sleep(2 * time.Second)
 	}
 	err = broker.Close()
 	c.events <- FinalTurnComplete{

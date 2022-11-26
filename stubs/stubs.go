@@ -1,6 +1,5 @@
 package stubs
 
-var CommandExecuted = "Distributor.CommandExecuted"
 var ExecuteCommand = "Worker.ExecuteCommand"
 var StripReceive = "Worker.StripReceive"
 var AddressReceive = "Worker.AddressReceive"
@@ -21,7 +20,9 @@ type StripContainer struct {
 	Order  int
 	StartY int
 }
-
+type WorkerReportArr struct {
+	Arr []WorkerReport
+}
 type WorkerReport struct {
 	WorkerReturn    *StripContainer
 	Command         WorkerCommand

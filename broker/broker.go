@@ -6,16 +6,11 @@ import (
 	"net"
 	"net/rpc"
 	"sync"
+	"time"
 	"uk.ac.bris.cs/gameoflife/gol"
 	"uk.ac.bris.cs/gameoflife/stubs"
 )
 
-type BrokerChannels struct {
-	strips        chan stubs.StripContainer
-	commands      chan stubs.WorkerCommand
-	workerLocks   []chan int
-	workerUnlocks []chan int
-}
 type WorkerChannelContainer struct {
 	strips   chan stubs.StripContainer
 	commands chan stubs.WorkerCommand
@@ -25,7 +20,7 @@ type WorkerChannelContainer struct {
 
 type Broker struct {
 	workerChannelsArr []*WorkerChannelContainer
-	distributorClient *rpc.Client
+	workerResponses   chan stubs.WorkerReport
 	workerAddresses   []string
 	addressesMX       sync.Mutex
 	workersRequired   int
@@ -42,13 +37,6 @@ type WorkerLock uint8
 const (
 	Lock WorkerLock = iota
 	Unlock
-)
-
-var (
-	brokerChannels = BrokerChannels{
-		strips:   make(chan stubs.StripContainer),
-		commands: make(chan stubs.WorkerCommand),
-	}
 )
 
 func handleError(err error) bool {
@@ -90,7 +78,6 @@ func (b *Broker) subscriberLoop(client *rpc.Client, address string, workerChanne
 			b.workerLocked(workerChannels, client)
 		case strip := <-workerChannels.strips:
 			workerResponse := new(stubs.WorkerReport)
-			distributorResponse := new(stubs.StatusReport)
 			err := client.Call(stubs.StripReceive, strip, workerResponse)
 			if handleError(err) {
 				return
@@ -99,8 +86,7 @@ func (b *Broker) subscriberLoop(client *rpc.Client, address string, workerChanne
 			b.addressesMX.Lock()
 			b.workerAddresses[order] = address
 			b.addressesMX.Unlock()
-
-			err = b.distributorClient.Call(stubs.CommandExecuted, workerResponse, distributorResponse)
+			b.workerResponses <- *workerResponse
 			if handleError(err) {
 				return
 			}
@@ -119,10 +105,7 @@ func (b *Broker) subscriberLoop(client *rpc.Client, address string, workerChanne
 					return
 				}
 
-				err = b.distributorClient.Call(stubs.CommandExecuted, workerResponse, nil)
-				if handleError(err) {
-					return
-				}
+				b.workerResponses <- *workerResponse
 			} else {
 				b.executeCommand(command, client)
 			}
@@ -135,22 +118,26 @@ func (b *Broker) processKillCommand(client *rpc.Client) {
 	handleError(err)
 	// If there are no workers left to kill, shut down broker
 	if b.workersSubscribed == 0 {
+		time.Sleep(5 * time.Second)
 		b.done <- 1
 	}
 }
 
-// Redesign this system to have individual command channels
+func (b *Broker) receiveWorkerReports() []stubs.WorkerReport {
+	reportArr := make([]stubs.WorkerReport, 0)
+	for i := 0; i < b.workersRequired; i++ {
+		report := <-b.workerResponses
+		reportArr = append(reportArr, report)
+	}
+	return reportArr
+}
 func (b *Broker) executeCommand(command stubs.WorkerCommand, client *rpc.Client) {
 	workerResponse := new(stubs.WorkerReport)
-	distributorResponse := new(stubs.StatusReport)
 	err := client.Call(stubs.ExecuteCommand, stubs.Command{WorkerCommand: command}, &workerResponse)
 	if handleError(err) {
 		return
 	}
-	err = b.distributorClient.Call(stubs.CommandExecuted, workerResponse, &distributorResponse)
-	if handleError(err) {
-		return
-	}
+	b.workerResponses <- *workerResponse
 	if command == stubs.Kill {
 		b.processKillCommand(client)
 	} else if command == stubs.Finish {
@@ -213,12 +200,14 @@ func (b *Broker) PublishStrip(req stubs.PublishStripRequest, res *stubs.StatusRe
 	fmt.Println("Publishing Strips")
 	b.workerChannelsArr[b.stripsReceived].strips <- req.Strip
 	b.stripsReceived++
+	<-b.workerResponses
 	return
 }
-func (b *Broker) PublishCommand(req stubs.Command, res *stubs.StatusReport) (err error) {
+func (b *Broker) PublishCommand(req stubs.Command, res *stubs.WorkerReportArr) (err error) {
 	for i := 0; i < b.workersRequired; i++ {
 		b.workerChannelsArr[i].commands <- req.WorkerCommand
 	}
+	res.Arr = b.receiveWorkerReports()
 	if req.WorkerCommand == stubs.ExecuteTurn {
 		b.turnsProcessed++
 	} else if req.WorkerCommand == stubs.Kill {
@@ -226,13 +215,10 @@ func (b *Broker) PublishCommand(req stubs.Command, res *stubs.StatusReport) (err
 			b.workerChannelsArr[i].kill <- 1
 		}
 	}
+	// Collect reports
 	return
 }
 func (b *Broker) RegisterDistributor(req stubs.DistributorSubscription, res *stubs.DistributorSubscriptionResponse) (err error) {
-	b.distributorClient, err = rpc.Dial("tcp", req.Address)
-	if err != nil {
-		fmt.Println(err)
-	}
 	// If new distributor params are the same then continue processing the same image
 	if b.workersRequired == req.Threads && b.height == req.Height && b.width == req.Width {
 		res.TurnsProcessed = b.turnsProcessed
@@ -246,17 +232,11 @@ func (b *Broker) RegisterDistributor(req stubs.DistributorSubscription, res *stu
 	b.workersReady()
 	return err
 }
-func (b *Broker) DeregisterDistributor(req stubs.DistributorSubscription, res *stubs.StatusReport) (err error) {
-	b.distributorClient = nil
-	// b.distributorClient.Close()
-	return
-}
 
 func main() {
 	pAddr := flag.String("port", "8040", "Port to listen on")
 	flag.Parse()
 	b := Broker{
-		distributorClient: nil,
 		workerAddresses:   make([]string, 16),
 		addressesMX:       sync.Mutex{},
 		workersRequired:   0,
@@ -264,6 +244,7 @@ func main() {
 		subscribed:        make(chan int, 16),
 		done:              make(chan int),
 		working:           false,
+		workerResponses:   make(chan stubs.WorkerReport, 16),
 	}
 	err := rpc.Register(&b)
 	handleError(err)
