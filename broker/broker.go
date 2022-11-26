@@ -220,6 +220,8 @@ func (b *Broker) PublishCommand(req stubs.Command, res *stubs.WorkerReportArr) (
 }
 func (b *Broker) RegisterDistributor(req stubs.DistributorSubscription, res *stubs.DistributorSubscriptionResponse) (err error) {
 	// If new distributor params are the same then continue processing the same image
+	fmt.Println("Registering Distributor")
+
 	if b.workersRequired == req.Threads && b.height == req.Height && b.width == req.Width {
 		res.TurnsProcessed = b.turnsProcessed
 	} else {
