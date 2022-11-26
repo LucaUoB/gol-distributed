@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/rpc"
+	"time"
 	"uk.ac.bris.cs/gameoflife/gol"
 	"uk.ac.bris.cs/gameoflife/stubs"
 	"uk.ac.bris.cs/gameoflife/util"
@@ -50,13 +51,72 @@ func getNeighborCount(c util.Cell, world [][]byte) int {
 }
 
 type Worker struct {
+	commonChannels   commonChannels
+	localWorkers     []*localWorker
 	commands         chan stubs.WorkerCommand
 	strip            *stubs.StripContainer
 	rows             chan stubs.StripContainer
 	up, down, broker *rpc.Client
 	commandResponse  chan stubs.WorkerReport
+	done             chan int
+	threads          int
+	dp               bool
+}
+type localWorkerCommand uint8
+
+const (
+	MaxWidth  = 5120
+	MaxHeight = 5120
+	Threads   = 4
+)
+
+const (
+	executeTurn localWorkerCommand = iota
+	finish
+	countCells
+	reset
+	getAlive
+	kill
+	getFlippedCells
+)
+
+type commonChannels struct {
+	aliveCount       chan int
+	workerReturns    chan stubs.StripContainer
+	commandCompleted chan int
+	aliveCells       chan util.Cell
+	flippedCells     chan util.Cell
+}
+type workerChannels struct {
+	workerReturn chan stubs.StripContainer
+	worldStripIn chan byte
+}
+type localWorkerChannels struct {
+	inUp          chan byte
+	inDown        chan byte
+	outUp         chan byte
+	outDown       chan byte
+	workerCommand chan localWorkerCommand
+	receiveStrip  chan stubs.StripContainer
+}
+type localWorker struct {
+	height, width, order, startY int
+	worldStrip                   [][]byte
+	localWorkerChannels          *localWorkerChannels
+	commonChannels               *commonChannels
 }
 
+func getAllAlive(strip [][]byte, startY int) []util.Cell {
+	var aliveCells []util.Cell
+	for i := range strip {
+		for f := range strip[i] {
+			if strip[i][f] == 255 {
+				aliveCells = append(aliveCells, util.Cell{X: f, Y: i + startY})
+			}
+		}
+	}
+	return aliveCells
+}
 func (w *Worker) receiveRow() {
 	row := <-w.rows
 	if row.Order == 0 {
@@ -65,15 +125,194 @@ func (w *Worker) receiveRow() {
 		w.strip.Strip = append(row.Strip, w.strip.Strip...)
 	}
 }
-func (w *Worker) workerLoop() {
-	turn := 0
+func (w *Worker) startLocalWorkers(localWorkerChannels []*localWorkerChannels, commonChannels *commonChannels) {
+	w.commonChannels = *commonChannels
+	for i := 0; i < w.threads; i++ {
+		worker := localWorker{
+			localWorkerChannels: localWorkerChannels[i],
+			commonChannels:      commonChannels,
+		}
+		w.localWorkers = append(w.localWorkers, &worker)
+		go worker.localWorkerLoop()
+	}
+}
+func (w *Worker) createLocalWorkerChannels() ([]*localWorkerChannels, commonChannels) {
+	var workerChannelsArr []*localWorkerChannels
+	commonChans := commonChannels{
+		aliveCount:       make(chan int, w.threads),
+		workerReturns:    make(chan stubs.StripContainer, w.threads),
+		commandCompleted: make(chan int, w.threads),
+		aliveCells:       make(chan util.Cell, MaxWidth*MaxHeight),
+		flippedCells:     make(chan util.Cell, MaxWidth*MaxHeight),
+	}
+	workerChannelsArr = append(workerChannelsArr, &localWorkerChannels{
+		inUp:          make(chan byte, MaxWidth),
+		inDown:        make(chan byte, MaxWidth),
+		outUp:         make(chan byte, MaxWidth),
+		outDown:       make(chan byte, MaxWidth),
+		workerCommand: make(chan localWorkerCommand, w.threads),
+		receiveStrip:  make(chan stubs.StripContainer),
+	})
+	for i := 1; i < w.threads; i++ {
+		workerChannelsArr = append(workerChannelsArr, &localWorkerChannels{
+			inUp:          make(chan byte, MaxWidth),
+			inDown:        nil,
+			outUp:         make(chan byte, MaxWidth),
+			outDown:       nil,
+			workerCommand: make(chan localWorkerCommand, w.threads),
+			receiveStrip:  make(chan stubs.StripContainer),
+		})
+		workerChannelsArr[i-1].outDown = workerChannelsArr[i].inUp
+		workerChannelsArr[i-1].inDown = workerChannelsArr[i].outUp
+	}
+	workerChannelsArr[len(workerChannelsArr)-1].outDown = workerChannelsArr[0].inUp
+	workerChannelsArr[len(workerChannelsArr)-1].inDown = workerChannelsArr[0].outUp
+	return workerChannelsArr, commonChans
+}
+func (w *Worker) broadcastCommand(command localWorkerCommand) {
+	for i := 0; i < len(w.localWorkers); i++ {
+		w.localWorkers[i].localWorkerChannels.workerCommand <- command
+	}
+}
+func (w *Worker) receiveCommand(c chan int) {
+	for i := 0; i < len(w.localWorkers); i++ {
+		<-c
+	}
+}
+func (w *Worker) workerDistributorLoop() {
 	for {
 		select {
 		case command := <-w.commands:
 			switch command {
+			case stubs.Kill:
+				w.returnStrip(stubs.Finish)
+				time.Sleep(2 * time.Second)
+				w.done <- 1
+
+			case stubs.CountCells:
+				count := 0
+				w.broadcastCommand(countCells)
+				for i := 0; i < len(w.localWorkers); i++ {
+					count += <-w.commonChannels.aliveCount
+				}
+				w.commandResponse <- stubs.WorkerReport{
+					WorkerReturn:    nil,
+					Command:         stubs.CountCells,
+					CommandExecuted: true,
+					AliveCount:      count,
+				}
 			case stubs.ExecuteTurn:
 				// Send top and bottom rows
-				turn++
+				response := new(stubs.StatusReport)
+				err := w.up.Call(stubs.SendRow, stubs.StripContainer{
+					Strip: [][]byte{w.strip.Strip[0]},
+					Order: 0,
+				}, &response)
+				if err != nil {
+					fmt.Println(err)
+					return
+				}
+				err = w.down.Call(stubs.SendRow, stubs.StripContainer{
+					Strip: [][]byte{w.strip.Strip[len(w.strip.Strip)-1]},
+					Order: 1,
+				}, &response)
+				if err != nil {
+					return
+				}
+				// Receive top and bottom rows
+				w.receiveRow()
+				w.receiveRow()
+				// Broadcast command to local workers to calculate next step
+				w.broadcastCommand(executeTurn)
+				w.receiveCommand(w.commonChannels.commandCompleted)
+				w.commandResponse <- stubs.WorkerReport{
+					WorkerReturn:    nil,
+					CommandExecuted: true,
+					Command:         command,
+				}
+			case stubs.ReturnStrip:
+				w.dpReturnStrip(command)
+			case stubs.Finish:
+				w.dpReturnStrip(command)
+			}
+		}
+	}
+}
+func makeWorld(height, width int) [][]byte {
+	world := make([][]byte, height)
+	for i := range world {
+		world[i] = make([]byte, width)
+	}
+	return world
+}
+func (lw *localWorker) reset() {
+	lw.worldStrip = makeWorld(lw.height, lw.width)
+}
+func channelArrWrite(channel chan byte, arr []byte) {
+	for i := 0; i < len(arr); i++ {
+		channel <- arr[i]
+	}
+}
+func channelArrRead(channel chan byte, l int) []byte {
+	arr := make([]byte, l)
+	for i := 0; i < l; i++ {
+		arr[i] = <-channel
+	}
+	return arr
+}
+func (lw *localWorker) localWorkerLoop() {
+	lw.reset()
+	for {
+		select {
+		case strip := <-lw.localWorkerChannels.receiveStrip:
+			lw.worldStrip = strip.Strip
+			lw.startY = strip.StartY
+			lw.order = strip.Order
+			lw.height = len(strip.Strip)
+			lw.width = len(strip.Strip[0])
+		case c := <-lw.localWorkerChannels.workerCommand:
+			switch c {
+			case finish:
+				lw.commonChannels.workerReturns <- stubs.StripContainer{
+					Strip:  lw.worldStrip,
+					Order:  lw.order,
+					StartY: lw.startY,
+				}
+			case executeTurn:
+				channelArrWrite(lw.localWorkerChannels.outUp, lw.worldStrip[0])
+				channelArrWrite(lw.localWorkerChannels.outDown, lw.worldStrip[lw.height-1])
+				lw.worldStrip = append([][]byte{channelArrRead(lw.localWorkerChannels.inUp, lw.width)}, lw.worldStrip...)
+				lw.worldStrip = append(lw.worldStrip, channelArrRead(lw.localWorkerChannels.inDown, lw.width))
+				lw.worldStrip = calculateNextStep(lw.worldStrip)
+				lw.commonChannels.commandCompleted <- 1
+			case countCells:
+				lw.commonChannels.aliveCount <- len(getAllAlive(lw.worldStrip, lw.startY))
+			case reset:
+				lw.reset()
+			}
+
+		}
+	}
+}
+func (w *Worker) workerLoop() {
+	for {
+		select {
+		case command := <-w.commands:
+			switch command {
+			case stubs.Kill:
+				w.returnStrip(stubs.Finish)
+				time.Sleep(2 * time.Second)
+				w.done <- 1
+
+			case stubs.CountCells:
+				w.commandResponse <- stubs.WorkerReport{
+					WorkerReturn:    nil,
+					Command:         stubs.CountCells,
+					CommandExecuted: true,
+					AliveCount:      len(getAllAlive(w.strip.Strip, w.strip.StartY)),
+				}
+			case stubs.ExecuteTurn:
+				// Send top and bottom rows
 				response := new(stubs.StatusReport)
 				err := w.up.Call(stubs.SendRow, stubs.StripContainer{
 					Strip: [][]byte{w.strip.Strip[0]},
@@ -94,29 +333,55 @@ func (w *Worker) workerLoop() {
 				w.receiveRow()
 				w.receiveRow()
 				w.strip.Strip = calculateNextStep(w.strip.Strip)
-				fmt.Println(turn)
 				w.commandResponse <- stubs.WorkerReport{
 					WorkerReturn:    nil,
 					CommandExecuted: true,
 					Command:         command,
 				}
+			case stubs.ReturnStrip:
+				w.returnStrip(command)
 			case stubs.Finish:
-				w.commandResponse <- stubs.WorkerReport{
-					WorkerReturn:    w.strip,
-					CommandExecuted: true,
-					Command:         command,
-				}
+				w.returnStrip(command)
 			}
 		}
 	}
 }
-
+func (w *Worker) getFullWorld() {
+	w.broadcastCommand(finish)
+	threads := len(w.localWorkers)
+	strips := make([][][]byte, threads)
+	for i := 0; i < threads; i++ {
+		returnedStrip := <-w.commonChannels.workerReturns
+		strips[returnedStrip.Order] = returnedStrip.Strip
+	}
+	finalWorld := makeWorld(0, 0)
+	for _, strip := range strips {
+		finalWorld = append(finalWorld, strip...)
+	}
+	w.strip.Strip = finalWorld
+}
+func (w *Worker) dpReturnStrip(command stubs.WorkerCommand) {
+	w.getFullWorld()
+	w.commandResponse <- stubs.WorkerReport{
+		WorkerReturn:    w.strip,
+		Command:         command,
+		CommandExecuted: true,
+	}
+}
+func (w *Worker) returnStrip(command stubs.WorkerCommand) {
+	w.commandResponse <- stubs.WorkerReport{
+		WorkerReturn:    w.strip,
+		CommandExecuted: true,
+		Command:         command,
+	}
+}
 func (w *Worker) ExecuteCommand(req stubs.Command, res *stubs.WorkerReport) (err error) {
 	w.commands <- req.WorkerCommand
 	r := <-w.commandResponse
 	res.CommandExecuted = r.CommandExecuted
 	res.WorkerReturn = r.WorkerReturn
 	res.Command = r.Command
+	res.AliveCount = r.AliveCount
 	return
 }
 func (w *Worker) SendRow(req stubs.StripContainer, res *stubs.StatusReport) (err error) {
@@ -126,7 +391,22 @@ func (w *Worker) SendRow(req stubs.StripContainer, res *stubs.StatusReport) (err
 }
 func (w *Worker) StripReceive(req stubs.StripContainer, res *stubs.WorkerReport) (err error) {
 	w.strip = &req
-	fmt.Println("Strip Received")
+	if w.dp {
+		step := len(req.Strip) / w.threads
+		for i := 0; i < len(w.localWorkers)-1; i++ {
+			w.localWorkers[i].localWorkerChannels.receiveStrip <- stubs.StripContainer{
+				Strip:  req.Strip[i*step : (i+1)*step],
+				Order:  i,
+				StartY: i * step,
+			}
+		}
+		l := len(w.localWorkers) - 1
+		w.localWorkers[l].localWorkerChannels.receiveStrip <- stubs.StripContainer{
+			Strip:  req.Strip[l*step:],
+			Order:  l,
+			StartY: l * step,
+		}
+	}
 	res.Command = stubs.ReceiveStrip
 	return
 }
@@ -138,11 +418,12 @@ func (w *Worker) AddressReceive(req stubs.AddressPair, res *stubs.WorkerReport) 
 }
 
 func main() {
-	block := make(chan int)
 	pAddr := flag.String("ip", "127.0.0.1:8050", "IP and port to listen on")
 	brokerAddr := flag.String("broker", "127.0.0.1:8040", "Address of broker instance")
+	distributedParallel := flag.String("dp", "0", "0 for distributed, 1 for distributed parallel")
 	flag.Parse()
 	w := Worker{
+		localWorkers:    make([]*localWorker, 0),
 		commands:        make(chan stubs.WorkerCommand),
 		strip:           nil,
 		rows:            make(chan stubs.StripContainer, 2),
@@ -150,7 +431,16 @@ func main() {
 		down:            nil,
 		commandResponse: make(chan stubs.WorkerReport, 2),
 		broker:          nil,
+		done:            make(chan int),
+		threads:         Threads,
+		dp:              false,
 	}
+	if *distributedParallel == "1" {
+		w.dp = true
+		localWorkerChans, commonChans := w.createLocalWorkerChannels()
+		w.startLocalWorkers(localWorkerChans, &commonChans)
+	}
+
 	err := rpc.Register(&w)
 	if err != nil {
 		fmt.Println(err)
@@ -174,6 +464,10 @@ func main() {
 	status := new(stubs.StatusReport)
 	w.broker.Call(stubs.Subscribe, subscription, &status)
 	fmt.Println(status.Message)
-	go w.workerLoop()
-	<-block
+	if *distributedParallel == "1" {
+		go w.workerDistributorLoop()
+	} else {
+		go w.workerLoop()
+	}
+	<-w.done
 }

@@ -4,12 +4,12 @@ var CommandExecuted = "Distributor.CommandExecuted"
 var ExecuteCommand = "Worker.ExecuteCommand"
 var StripReceive = "Worker.StripReceive"
 var AddressReceive = "Worker.AddressReceive"
-var WorkerSubscribed = "Distributor.WorkerSubscribed"
 var Subscribe = "Broker.Subscribe"
 var PublishStrip = "Broker.PublishStrip"
 var PublishCommand = "Broker.PublishCommand"
 var RegisterDistributor = "Broker.RegisterDistributor"
 var SendRow = "Worker.SendRow"
+var UnlockWorkers = "Broker.UnlockWorkers"
 
 type AddressPair struct {
 	Up   string
@@ -17,22 +17,28 @@ type AddressPair struct {
 }
 
 type StripContainer struct {
-	Strip [][]byte
-	Order int
+	Strip  [][]byte
+	Order  int
+	StartY int
 }
 
 type WorkerReport struct {
 	WorkerReturn    *StripContainer
 	Command         WorkerCommand
 	CommandExecuted bool
+	AliveCount      int
 }
 
 type Subscription struct {
 	Address string
 }
 type DistributorSubscription struct {
-	Address string
-	Threads int
+	Address       string
+	Threads       int
+	Height, Width int
+}
+type DistributorSubscriptionResponse struct {
+	TurnsProcessed int
 }
 
 type PublishStripRequest struct {
@@ -51,7 +57,10 @@ type WorkerCommand uint8
 
 const (
 	ExecuteTurn WorkerCommand = iota
+	WorkerLock
+	WorkerUnlock
 	Finish
+	ReturnStrip
 	CountCells
 	GetAlive
 	Kill
