@@ -165,7 +165,7 @@ func (b *Broker) subscribe(workerAddress string) (err error) {
 		strips:   make(chan stubs.StripContainer),
 		commands: make(chan stubs.WorkerCommand, 2),
 		lock:     make(chan WorkerLock),
-		kill:     make(chan int),
+		kill:     make(chan int, 1),
 	}
 	b.workerChannelsArr = append(b.workerChannelsArr, &w)
 	if err == nil && !b.working {
@@ -211,8 +211,10 @@ func (b *Broker) PublishCommand(req stubs.Command, res *stubs.WorkerReportArr) (
 	if req.WorkerCommand == stubs.ExecuteTurn {
 		b.turnsProcessed++
 	} else if req.WorkerCommand == stubs.Kill {
-		for i := b.workersRequired; i < b.workersSubscribed; i++ {
-			b.workerChannelsArr[i].kill <- 1
+		fmt.Println(b.workersRequired)
+		fmt.Println(b.workersSubscribed)
+		for i := 0; i < b.workersSubscribed; i++ {
+			b.workerChannelsArr[i+b.workersRequired].kill <- 1
 		}
 	}
 	// Collect reports
