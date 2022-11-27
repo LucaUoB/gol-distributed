@@ -38,6 +38,10 @@ func initChannels(p Params, events chan<- Event, keyPresses <-chan rune) distrib
 
 // Run starts the processing of Game of Life. It should initialise channels and goroutines.
 func Run(p Params, events chan<- Event, keyPresses <-chan rune) {
-	distributorChannels := initChannels(p, events, keyPresses)
-	distributor(p, distributorChannels)
+	distChannels := initChannels(p, events, keyPresses)
+	distributor(p, distChannels)
+}
+func RunBench(p Params, events chan<- Event, keyPresses <-chan rune) {
+	distChannels := initChannels(p, events, keyPresses)
+	benchmarkingDistributor(p, distChannels)
 }

@@ -48,10 +48,21 @@ func main() {
 	fmt.Println("Width:", params.ImageWidth)
 	fmt.Println("Height:", params.ImageHeight)
 
+	runGOL(params, noVis)
+}
+func runGOLBench(params gol.Params, noVis *bool) {
 	keyPresses := make(chan rune, 10)
 	events := make(chan gol.Event, 1000)
-
+	go gol.RunBench(params, events, keyPresses)
+	runIO(params, noVis, events, keyPresses)
+}
+func runGOL(params gol.Params, noVis *bool) {
+	keyPresses := make(chan rune, 10)
+	events := make(chan gol.Event, 1000)
 	go gol.Run(params, events, keyPresses)
+	runIO(params, noVis, events, keyPresses)
+}
+func runIO(params gol.Params, noVis *bool, events chan gol.Event, keyPresses chan rune) {
 	if !(*noVis) {
 		sdl.Run(params, events, keyPresses)
 	} else {

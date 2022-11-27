@@ -89,18 +89,25 @@ func (d *Distributor) runIO(turn int, ticker *time.Ticker) bool {
 	}
 	return false
 }
-func (d *Distributor) runImage(startTurn int) ([][]byte, int) {
+func (d *Distributor) runImage(startTurn int, io bool) ([][]byte, int) {
 	if startTurn == 0 {
 		d.publishStrips() // Publish strips and wait for strips received flag
 		d.broadcastCommand(stubs.AssignAddresses)
 	}
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-	// d.runIO(1, ticker)
+	var ticker *time.Ticker
+	if io {
+		ticker = time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+	}
+
 	for turn := startTurn; turn < d.p.Turns; turn++ {
 		d.broadcastCommand(stubs.ExecuteTurn)
-		if d.runIO(turn, ticker) {
-			return d.outputWorld(), turn
+		if io {
+			if d.runIO(turn, ticker) {
+				return d.outputWorld(), turn
+			}
+		} else {
+			d.c.events <- TurnComplete{CompletedTurns: turn}
 		}
 	}
 	d.broadcastCommand(stubs.Finish)
@@ -184,9 +191,7 @@ func outputPGM(world [][]byte, c distributorChannels, p Params, turn int) {
 		}
 	}
 }
-
-// distributorClient divides the work between workers and interacts with other goroutines.
-func distributor(p Params, c distributorChannels) {
+func initialiseDistributor(p Params, c distributorChannels, io bool) {
 	//brokerAddr := "54.209.254.186:8040"
 	brokerAddr := "127.0.0.1:8040"
 
@@ -213,7 +218,7 @@ func distributor(p Params, c distributorChannels) {
 		fmt.Println(err)
 		return
 	}
-	completedWorld, turn := dist.runImage(status.TurnsProcessed)
+	completedWorld, turn := dist.runImage(status.TurnsProcessed, io)
 	outputPGM(completedWorld, c, p, turn)
 	if !dist.killed {
 		err = broker.Call(stubs.UnlockWorkers, stubs.StatusReport{}, &stubs.StatusReport{})
@@ -234,4 +239,12 @@ func distributor(p Params, c distributorChannels) {
 	<-c.ioIdle
 	c.events <- StateChange{turn, Quitting}
 	close(c.events)
+}
+func benchmarkingDistributor(p Params, c distributorChannels) {
+	initialiseDistributor(p, c, false)
+}
+
+// distributorClient divides the work between workers and interacts with other goroutines.
+func distributor(p Params, c distributorChannels) {
+	initialiseDistributor(p, c, true)
 }
