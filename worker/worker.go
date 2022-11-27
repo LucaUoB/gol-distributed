@@ -55,7 +55,7 @@ type Worker struct {
 	localWorkers     []*localWorker
 	commands         chan stubs.WorkerCommand
 	strip            *stubs.StripContainer
-	rows             chan stubs.StripContainer
+	rows             chan stubs.RowContainer
 	up, down, broker *rpc.Client
 	commandResponse  chan stubs.WorkerReport
 	done             chan int
@@ -67,7 +67,7 @@ type localWorkerCommand uint8
 const (
 	MaxWidth  = 5120
 	MaxHeight = 5120
-	Threads   = 4
+	Threads   = 2
 )
 
 const (
@@ -119,10 +119,14 @@ func getAllAlive(strip [][]byte, startY int) []util.Cell {
 }
 func (w *Worker) receiveRow() {
 	row := <-w.rows
-	if row.Order == 0 {
-		w.strip.Strip = append(w.strip.Strip, row.Strip...)
+	newRow := make([]byte, len(w.strip.Strip[0]))
+	for _, p := range row.Row {
+		newRow[p] = 255
+	}
+	if row.Type == 0 {
+		w.strip.Strip = append(w.strip.Strip, newRow)
 	} else {
-		w.strip.Strip = append(row.Strip, w.strip.Strip...)
+		w.strip.Strip = append([][]byte{newRow}, w.strip.Strip...)
 	}
 }
 func (w *Worker) startLocalWorkers(localWorkerChannels []*localWorkerChannels, commonChannels *commonChannels) {
@@ -179,6 +183,23 @@ func (w *Worker) receiveCommand(c chan int) {
 		<-c
 	}
 }
+func (w *Worker) sendRow(row []byte, order int) {
+	alive := make([]int, 0)
+	for i, b := range row {
+		if b != 0 {
+			alive = append(alive, i)
+		}
+	}
+	response := new(stubs.StatusReport)
+	err := w.up.Call(stubs.SendRow, stubs.RowContainer{
+		Row:  alive,
+		Type: order,
+	}, &response)
+	if err != nil { // TODO make handle error accessible to all files
+		fmt.Println(err)
+		return
+	}
+}
 func (w *Worker) workerDistributorLoop() {
 	for {
 		select {
@@ -203,22 +224,8 @@ func (w *Worker) workerDistributorLoop() {
 				}
 			case stubs.ExecuteTurn:
 				// Send top and bottom rows
-				response := new(stubs.StatusReport)
-				err := w.up.Call(stubs.SendRow, stubs.StripContainer{
-					Strip: [][]byte{w.strip.Strip[0]},
-					Order: 0,
-				}, &response)
-				if err != nil {
-					fmt.Println(err)
-					return
-				}
-				err = w.down.Call(stubs.SendRow, stubs.StripContainer{
-					Strip: [][]byte{w.strip.Strip[len(w.strip.Strip)-1]},
-					Order: 1,
-				}, &response)
-				if err != nil {
-					return
-				}
+				w.sendRow(w.strip.Strip[0], 0)
+				w.sendRow(w.strip.Strip[len(w.strip.Strip)-1], 1)
 				// Receive top and bottom rows
 				w.receiveRow()
 				w.receiveRow()
@@ -313,22 +320,8 @@ func (w *Worker) workerLoop() {
 				}
 			case stubs.ExecuteTurn:
 				// Send top and bottom rows
-				response := new(stubs.StatusReport)
-				err := w.up.Call(stubs.SendRow, stubs.StripContainer{
-					Strip: [][]byte{w.strip.Strip[0]},
-					Order: 0,
-				}, &response)
-				if err != nil {
-					fmt.Println(err)
-					return
-				}
-				err = w.down.Call(stubs.SendRow, stubs.StripContainer{
-					Strip: [][]byte{w.strip.Strip[len(w.strip.Strip)-1]},
-					Order: 1,
-				}, &response)
-				if err != nil {
-					return
-				}
+				w.sendRow(w.strip.Strip[0], 0)
+				w.sendRow(w.strip.Strip[len(w.strip.Strip)-1], 1)
 				// Receive top and bottom rows
 				w.receiveRow()
 				w.receiveRow()
@@ -384,7 +377,7 @@ func (w *Worker) ExecuteCommand(req stubs.Command, res *stubs.WorkerReport) (err
 	res.AliveCount = r.AliveCount
 	return
 }
-func (w *Worker) SendRow(req stubs.StripContainer, res *stubs.StatusReport) (err error) {
+func (w *Worker) SendRow(req stubs.RowContainer, res *stubs.StatusReport) (err error) {
 	w.rows <- req
 	res.Message = "Row received"
 	return
@@ -426,7 +419,7 @@ func main() {
 		localWorkers:    make([]*localWorker, 0),
 		commands:        make(chan stubs.WorkerCommand),
 		strip:           nil,
-		rows:            make(chan stubs.StripContainer, 2),
+		rows:            make(chan stubs.RowContainer, 2),
 		up:              nil,
 		down:            nil,
 		commandResponse: make(chan stubs.WorkerReport, 2),

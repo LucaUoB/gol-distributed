@@ -14,7 +14,10 @@ type AddressPair struct {
 	Up   string
 	Down string
 }
-
+type RowContainer struct {
+	Row  []int
+	Type int
+}
 type StripContainer struct {
 	Strip  [][]byte
 	Order  int
