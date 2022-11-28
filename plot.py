@@ -8,6 +8,7 @@ benchmark_data['time'] /= 1e+9
 benchmark_data['workers'] = benchmark_data['name'].str.extract('(\d+)_')
 
 ax = sns.barplot(data=benchmark_data, x='workers', y='time')
+ax.invert_xaxis()
 ax.set(xlabel='Workers', ylabel='Time taken (s)')
 plt.show()
 
