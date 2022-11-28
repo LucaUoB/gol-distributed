@@ -17,7 +17,7 @@ import (
 func TestAlive(t *testing.T) {
 	p := gol.Params{
 		Turns:       100000000,
-		Threads:     8,
+		Threads:     2,
 		ImageWidth:  512,
 		ImageHeight: 512,
 	}

@@ -192,7 +192,7 @@ func outputPGM(world [][]byte, c distributorChannels, p Params, turn int) {
 	}
 }
 func initialiseDistributor(p Params, c distributorChannels, io bool) {
-	brokerAddr := "54.144.169.165:8040"
+	brokerAddr := "3.91.78.100:8040"
 	// brokerAddr := "127.0.0.1:8040"
 
 	// Subscribing to the broker instance
