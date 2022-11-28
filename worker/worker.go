@@ -312,7 +312,6 @@ func (w *Worker) workerLoop() {
 				w.done <- 1
 
 			case stubs.CountCells:
-				fmt.Println(getAllAlive(w.strip.Strip, w.strip.StartY))
 				w.commandResponse <- stubs.WorkerReport{
 					WorkerReturn:    nil,
 					Command:         stubs.CountCells,
