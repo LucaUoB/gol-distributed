@@ -191,13 +191,16 @@ func (w *Worker) sendRow(row []byte, order int) {
 		}
 	}
 	response := new(stubs.StatusReport)
-	err := w.up.Call(stubs.SendRow, stubs.RowContainer{
-		Row:  alive,
-		Type: order,
-	}, &response)
-	if err != nil { // TODO make handle error accessible to all files
-		fmt.Println(err)
-		return
+	if order == 0 {
+		w.up.Call(stubs.SendRow, stubs.RowContainer{
+			Row:  alive,
+			Type: order,
+		}, &response)
+	} else {
+		w.down.Call(stubs.SendRow, stubs.RowContainer{
+			Row:  alive,
+			Type: order,
+		}, &response)
 	}
 }
 func (w *Worker) workerDistributorLoop() {
@@ -312,7 +315,6 @@ func (w *Worker) workerLoop() {
 				w.done <- 1
 
 			case stubs.CountCells:
-				fmt.Println(getAllAlive(w.strip.Strip, w.strip.StartY))
 				w.commandResponse <- stubs.WorkerReport{
 					WorkerReturn:    nil,
 					Command:         stubs.CountCells,
@@ -357,14 +359,24 @@ func (w *Worker) getFullWorld() {
 func (w *Worker) dpReturnStrip(command stubs.WorkerCommand) {
 	w.getFullWorld()
 	w.commandResponse <- stubs.WorkerReport{
-		WorkerReturn:    w.strip,
+		WorkerReturn: &stubs.AliveCellsContainer{
+			Strip:  getAllAlive(w.strip.Strip, 0),
+			Order:  w.strip.Order,
+			StartY: w.strip.StartY,
+		},
 		Command:         command,
 		CommandExecuted: true,
 	}
 }
 func (w *Worker) returnStrip(command stubs.WorkerCommand) {
 	w.commandResponse <- stubs.WorkerReport{
-		WorkerReturn:    w.strip,
+		WorkerReturn: &stubs.AliveCellsContainer{
+			Strip:  getAllAlive(w.strip.Strip, 0),
+			Order:  w.strip.Order,
+			StartY: w.strip.StartY,
+			Height: len(w.strip.Strip),
+			Width:  len(w.strip.Strip[0]),
+		},
 		CommandExecuted: true,
 		Command:         command,
 	}
@@ -383,20 +395,29 @@ func (w *Worker) SendRow(req stubs.RowContainer, res *stubs.StatusReport) (err e
 	res.Message = "Row received"
 	return
 }
-func (w *Worker) StripReceive(req stubs.StripContainer, res *stubs.WorkerReport) (err error) {
-	w.strip = &req
+func (w *Worker) StripReceive(req stubs.AliveCellsContainer, res *stubs.WorkerReport) (err error) {
+	strip := makeWorld(req.Height, req.Width)
+	for _, cell := range req.Strip {
+		strip[cell.Y][cell.X] = 255
+	}
+	stripContainer := stubs.StripContainer{
+		Strip:  strip,
+		Order:  req.Order,
+		StartY: req.StartY,
+	}
+	w.strip = &stripContainer
 	if w.dp {
 		step := len(req.Strip) / w.threads
 		for i := 0; i < len(w.localWorkers)-1; i++ {
 			w.localWorkers[i].localWorkerChannels.receiveStrip <- stubs.StripContainer{
-				Strip:  req.Strip[i*step : (i+1)*step],
+				Strip:  stripContainer.Strip[i*step : (i+1)*step],
 				Order:  i,
 				StartY: i * step,
 			}
 		}
 		l := len(w.localWorkers) - 1
 		w.localWorkers[l].localWorkerChannels.receiveStrip <- stubs.StripContainer{
-			Strip:  req.Strip[l*step:],
+			Strip:  stripContainer.Strip[l*step:],
 			Order:  l,
 			StartY: l * step,
 		}

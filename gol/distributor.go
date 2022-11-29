@@ -136,19 +136,24 @@ func (d *Distributor) publishStrips() {
 	d.readImage()
 	step := d.p.ImageHeight / d.p.Threads
 	for i := 0; i < d.p.Threads-1; i++ {
-		strip := stubs.StripContainer{
-			Strip:  d.world[i*step : step*(i+1)],
+		aliveCells := stubs.AliveCellsContainer{
+			Strip:  getAllAlive(d.world[i*step:step*(i+1)], 0),
 			Order:  i,
 			StartY: i * step,
+			Width:  d.p.ImageWidth,
+			Height: step,
 		}
-		d.broker.Call(stubs.PublishStrip, stubs.PublishStripRequest{Strip: strip}, nil)
+		d.broker.Call(stubs.PublishStrip, stubs.PublishStripRequest{Strip: aliveCells}, nil)
 	}
-	strip := stubs.StripContainer{
-		Strip:  d.world[(d.p.Threads-1)*step:],
+	aliveCells := stubs.AliveCellsContainer{
+		Strip:  getAllAlive(d.world[(d.p.Threads-1)*step:], 0),
 		Order:  d.p.Threads - 1,
 		StartY: (d.p.Threads - 1) * step,
+		Width:  d.p.ImageWidth,
+		Height: d.p.ImageHeight - ((d.p.Threads - 1) * step),
 	}
-	d.broker.Call(stubs.PublishStrip, stubs.PublishStripRequest{Strip: strip}, nil)
+
+	d.broker.Call(stubs.PublishStrip, stubs.PublishStripRequest{Strip: aliveCells}, nil)
 }
 func (d *Distributor) broadcastCommand(command stubs.WorkerCommand) {
 	reports := new(stubs.WorkerReportArr)
@@ -160,16 +165,20 @@ func (d *Distributor) broadcastCommand(command stubs.WorkerCommand) {
 		case stubs.ReceiveStrip:
 		case stubs.ExecuteTurn:
 		case stubs.ReturnStrip:
-			d.collectStrips(report.WorkerReturn.Order, report.WorkerReturn.Strip)
+			d.collectStrips(report.WorkerReturn)
 		case stubs.Finish:
-			d.collectStrips(report.WorkerReturn.Order, report.WorkerReturn.Strip)
+			d.collectStrips(report.WorkerReturn)
 		case stubs.Kill:
-			d.collectStrips(report.WorkerReturn.Order, report.WorkerReturn.Strip)
+			d.collectStrips(report.WorkerReturn)
 		}
 	}
 }
-func (d *Distributor) collectStrips(order int, strip [][]byte) {
-	d.finalStrips[order] = strip
+func (d *Distributor) collectStrips(cells *stubs.AliveCellsContainer) {
+	strip := makeWorld(cells.Height, cells.Width)
+	for _, cell := range cells.Strip {
+		strip[cell.Y][cell.X] = 255
+	}
+	d.finalStrips[cells.Order] = strip
 }
 func getAllAlive(world [][]byte, startY int) []util.Cell {
 	var aliveCells []util.Cell
@@ -192,8 +201,8 @@ func outputPGM(world [][]byte, c distributorChannels, p Params, turn int) {
 	}
 }
 func initialiseDistributor(p Params, c distributorChannels, io bool) {
-	brokerAddr := "3.91.78.100:8040"
-	// brokerAddr := "127.0.0.1:8040"
+	//brokerAddr := "54.160.207.25:8040"
+	brokerAddr := "127.0.0.1:8040"
 
 	// Subscribing to the broker instance
 	broker, err := rpc.Dial("tcp", brokerAddr)
