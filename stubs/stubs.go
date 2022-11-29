@@ -1,5 +1,7 @@
 package stubs
 
+import "uk.ac.bris.cs/gameoflife/util"
+
 var ExecuteCommand = "Worker.ExecuteCommand"
 var StripReceive = "Worker.StripReceive"
 var AddressReceive = "Worker.AddressReceive"
@@ -18,6 +20,12 @@ type RowContainer struct {
 	Row  []int
 	Type int
 }
+type AliveCellsContainer struct {
+	Strip         []util.Cell
+	Order         int
+	StartY        int
+	Width, Height int
+}
 type StripContainer struct {
 	Strip  [][]byte
 	Order  int
@@ -27,7 +35,7 @@ type WorkerReportArr struct {
 	Arr []WorkerReport
 }
 type WorkerReport struct {
-	WorkerReturn    *StripContainer
+	WorkerReturn    *AliveCellsContainer
 	Command         WorkerCommand
 	CommandExecuted bool
 	AliveCount      int
@@ -46,7 +54,7 @@ type DistributorSubscriptionResponse struct {
 }
 
 type PublishStripRequest struct {
-	Strip StripContainer
+	Strip AliveCellsContainer
 }
 
 type StatusReport struct {

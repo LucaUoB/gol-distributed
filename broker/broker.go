@@ -12,7 +12,7 @@ import (
 )
 
 type WorkerChannelContainer struct {
-	strips   chan stubs.StripContainer
+	strips   chan stubs.AliveCellsContainer
 	commands chan stubs.WorkerCommand
 	lock     chan WorkerLock
 	kill     chan int
@@ -162,7 +162,7 @@ func (b *Broker) subscribe(workerAddress string) (err error) {
 	}
 
 	w := WorkerChannelContainer{
-		strips:   make(chan stubs.StripContainer),
+		strips:   make(chan stubs.AliveCellsContainer),
 		commands: make(chan stubs.WorkerCommand, 2),
 		lock:     make(chan WorkerLock),
 		kill:     make(chan int, 1),
@@ -211,8 +211,6 @@ func (b *Broker) PublishCommand(req stubs.Command, res *stubs.WorkerReportArr) (
 	if req.WorkerCommand == stubs.ExecuteTurn {
 		b.turnsProcessed++
 	} else if req.WorkerCommand == stubs.Kill {
-		fmt.Println(b.workersRequired)
-		fmt.Println(b.workersSubscribed)
 		for i := 0; i < b.workersSubscribed; i++ {
 			b.workerChannelsArr[i+b.workersRequired].kill <- 1
 		}

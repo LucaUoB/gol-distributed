@@ -15,5 +15,5 @@ plt.show()
 # -------------------------Benchmarking Commands-------------------------
 
 # go test -run ^$ -bench . -benchtime 1x -count 5 | tee results.out
-# go run golang.org/x/perf/cmd/benchstat -csv results.out | tee results.csv
+# go run golang.org/x/perf/cmd/benchstat -csv results.out | tee results2.csv
 # python plot.py

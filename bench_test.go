@@ -13,7 +13,7 @@ const (
 
 func BenchmarkGOL(b *testing.B) {
 	noVis := true
-	for i := 6; i >= 1; i-- {
+	for i := 2; i >= 1; i-- {
 		params := gol.Params{
 			Turns:       turns,
 			Threads:     i,

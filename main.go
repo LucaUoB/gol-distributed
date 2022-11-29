@@ -43,7 +43,6 @@ func main() {
 		"Disables the SDL window, so there is no visualisation during the tests.")
 
 	flag.Parse()
-
 	fmt.Println("Threads:", params.Threads)
 	fmt.Println("Width:", params.ImageWidth)
 	fmt.Println("Height:", params.ImageHeight)
