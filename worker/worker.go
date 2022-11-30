@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/rpc"
+	"strings"
 	"time"
 	"uk.ac.bris.cs/gameoflife/gol"
 	"uk.ac.bris.cs/gameoflife/stubs"
@@ -458,6 +459,7 @@ func main() {
 	brokerAddr := flag.String("broker", "127.0.0.1:8040", "Address of broker instance")
 	distributedParallel := flag.String("dp", "0", "0 for distributed, 1 for distributed parallel")
 	flag.Parse()
+	port := strings.Split(*pAddr, ":")[1]
 	w := Worker{
 		localWorkers:    make([]*localWorker, 0),
 		commands:        make(chan stubs.WorkerCommand),
@@ -483,7 +485,7 @@ func main() {
 		return
 	}
 	// Set up RPC server
-	listener, err := net.Listen("tcp", *pAddr)
+	listener, err := net.Listen("tcp", ":"+port)
 	if err != nil {
 		fmt.Println(err)
 		return
