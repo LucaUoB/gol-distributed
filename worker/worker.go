@@ -363,6 +363,8 @@ func (w *Worker) dpReturnStrip(command stubs.WorkerCommand) {
 			Strip:  getAllAlive(w.strip.Strip, 0),
 			Order:  w.strip.Order,
 			StartY: w.strip.StartY,
+			Height: len(w.strip.Strip),
+			Width:  len(w.strip.Strip[0]),
 		},
 		Command:         command,
 		CommandExecuted: true,
