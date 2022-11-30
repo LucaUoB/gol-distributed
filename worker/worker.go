@@ -396,6 +396,7 @@ func (w *Worker) SendRow(req stubs.RowContainer, res *stubs.StatusReport) (err e
 	return
 }
 func (w *Worker) StripReceive(req stubs.AliveCellsContainer, res *stubs.WorkerReport) (err error) {
+
 	strip := makeWorld(req.Height, req.Width)
 	for _, cell := range req.Strip {
 		strip[cell.Y][cell.X] = 255
@@ -407,7 +408,7 @@ func (w *Worker) StripReceive(req stubs.AliveCellsContainer, res *stubs.WorkerRe
 	}
 	w.strip = &stripContainer
 	if w.dp {
-		step := len(req.Strip) / w.threads
+		step := len(stripContainer.Strip) / w.threads
 		for i := 0; i < len(w.localWorkers)-1; i++ {
 			w.localWorkers[i].localWorkerChannels.receiveStrip <- stubs.StripContainer{
 				Strip:  stripContainer.Strip[i*step : (i+1)*step],
