@@ -117,7 +117,19 @@ func getAllAlive(strip [][]byte, startY int) []util.Cell {
 	}
 	return aliveCells
 }
-func (w *Worker) receiveRow() {
+func (w *Worker) dpReceiveRow(topInUp, bottomInDown chan byte) {
+	row := <-w.rows
+	newRow := make([]byte, len(w.strip.Strip[0]))
+	for _, p := range row.Row {
+		newRow[p] = 255
+	}
+	if row.Type == 1 {
+		channelArrWrite(topInUp, newRow)
+	} else {
+		channelArrWrite(bottomInDown, newRow)
+	}
+}
+func (w *Worker) receiveRow() []byte {
 	row := <-w.rows
 	newRow := make([]byte, len(w.strip.Strip[0]))
 	for _, p := range row.Row {
@@ -128,6 +140,7 @@ func (w *Worker) receiveRow() {
 	} else {
 		w.strip.Strip = append([][]byte{newRow}, w.strip.Strip...)
 	}
+	return newRow
 }
 func (w *Worker) startLocalWorkers(localWorkerChannels []*localWorkerChannels, commonChannels *commonChannels) {
 	w.commonChannels = *commonChannels
@@ -169,8 +182,7 @@ func (w *Worker) createLocalWorkerChannels() ([]*localWorkerChannels, commonChan
 		workerChannelsArr[i-1].outDown = workerChannelsArr[i].inUp
 		workerChannelsArr[i-1].inDown = workerChannelsArr[i].outUp
 	}
-	workerChannelsArr[len(workerChannelsArr)-1].outDown = workerChannelsArr[0].inUp
-	workerChannelsArr[len(workerChannelsArr)-1].inDown = workerChannelsArr[0].outUp
+	workerChannelsArr[len(workerChannelsArr)-1].outDown = make(chan byte, MaxWidth)
 	return workerChannelsArr, commonChans
 }
 func (w *Worker) broadcastCommand(command localWorkerCommand) {
@@ -204,6 +216,10 @@ func (w *Worker) sendRow(row []byte, order int) {
 	}
 }
 func (w *Worker) workerDistributorLoop() {
+	topInUp := make(chan byte, MaxWidth)
+	bottomInDown := make(chan byte, MaxWidth)
+	w.localWorkers[0].localWorkerChannels.inUp = topInUp
+	w.localWorkers[len(w.localWorkers)-1].localWorkerChannels.inDown = bottomInDown
 	for {
 		select {
 		case command := <-w.commands:
@@ -227,13 +243,15 @@ func (w *Worker) workerDistributorLoop() {
 				}
 			case stubs.ExecuteTurn:
 				// Send top and bottom rows
-				w.sendRow(w.strip.Strip[0], 0)
-				w.sendRow(w.strip.Strip[len(w.strip.Strip)-1], 1)
-				// Receive top and bottom rows
-				w.receiveRow()
-				w.receiveRow()
-				// Broadcast command to local workers to calculate next step
 				w.broadcastCommand(executeTurn)
+				topWorker := w.localWorkers[0]
+				w.sendRow(channelArrRead(topWorker.localWorkerChannels.outUp, topWorker.width), 0)
+				bottomWorker := w.localWorkers[len(w.localWorkers)-1]
+				w.sendRow(channelArrRead(bottomWorker.localWorkerChannels.outDown, bottomWorker.width), 1)
+				// Receive top and bottom rows
+				w.dpReceiveRow(topInUp, bottomInDown)
+				w.dpReceiveRow(topInUp, bottomInDown)
+				// Broadcast command to local workers to calculate next step
 				w.receiveCommand(w.commonChannels.commandCompleted)
 				w.commandResponse <- stubs.WorkerReport{
 					WorkerReturn:    nil,
